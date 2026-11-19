@@ -318,6 +318,19 @@
     .action-btn.active { color: var(--primary); background: var(--primary-soft); }
     .ai-actions time { padding: 0 8px; }
 
+    /* ---------- Typewriter ---------- */
+    .msg-ai.no-rise { animation: none; }
+    .ai-actions { transition: opacity 0.25s ease; }
+    .msg-ai.is-typing .ai-actions { visibility: hidden; opacity: 0; }
+    .tw-hide { display: none !important; }
+    .tw-caret { display: inline-block; width: 0; height: 1.05em; position: relative; vertical-align: text-bottom; pointer-events: none; }
+    .tw-caret::after { content: ''; position: absolute; left: 1px; top: 0; width: 2px; height: 100%; border-radius: 1px; background: var(--primary); animation: caretBlink 1s steps(1) infinite; }
+    .code-block .tw-caret::after { background: #8FB0FF; }
+    .copy-btn:disabled { opacity: 0.4; cursor: default; }
+    .tw-enter { overflow: hidden; animation: twGrow 0.24s ease-out both; }
+    @keyframes twGrow { from { max-height: 0; opacity: 0; margin-top: 0; margin-bottom: 0; } to { max-height: 160px; opacity: 1; } }
+    @keyframes caretBlink { 50% { opacity: 0; } }
+
     /* ---------- Typing + error ---------- */
     .typing { display: inline-flex; align-items: center; gap: 5px; padding: 14px 4px; }
     .typing span { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); opacity: 0.35; animation: bounce 1.2s infinite ease-in-out; }
