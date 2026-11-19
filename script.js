@@ -354,6 +354,262 @@
     }
   }
 
+  /* ============================================================
+     Syntax highlighting (small built-in tokenizer, DOM based).
+     Tokens are real <span> elements filled via textContent, so
+     highlighted code can never inject HTML, and copying a block
+     still returns exactly the original text.
+     ============================================================ */
+  const SRC = (re) => re.source;
+  const words = (list) => `\\b(?:${list.trim().split(/\s+/).join('|')})\\b`;
+
+  const P = {
+    lineC: SRC(/\/\/[^\n]*/),
+    hashC: SRC(/#[^\n]*/),
+    blockC: SRC(/\/\*[\s\S]*?(?:\*\/|(?![\s\S]))/),
+    dq: SRC(/"(?:\\.|[^"\\\n])*"?/),
+    sq: SRC(/'(?:\\.|[^'\\\n])*'?/),
+    bt: SRC(/`(?:\\[\s\S]|[^`\\])*`?/),
+    num: SRC(/\b0[xX][\da-fA-F_]+\b|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\b/),
+    typ: SRC(/\b[A-Z][\w$]*\b/),
+    fn: SRC(/[A-Za-z_$][\w$]*(?=\s*\()/),
+    id: SRC(/[A-Za-z_$][\w$]*/),
+  };
+
+  const LIT = 'true false null undefined NaN Infinity this nil NULL nullptr iota';
+  const KW = {
+    js: 'async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch throw try typeof var void while with yield',
+    ts: 'async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch throw try typeof var void while with yield interface type enum implements private protected public readonly abstract as namespace declare keyof infer satisfies',
+    java: 'abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized throw throws transient try void volatile while var record',
+    kotlin: 'abstract break class continue do else enum final finally for fun if import in interface is object override package private protected public return super this throw try typealias val var when while by catch companion constructor data init internal lateinit open sealed suspend',
+    csharp: 'abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new object operator out override params private protected public readonly ref return sbyte sealed short sizeof static string struct switch throw try typeof uint ulong unchecked unsafe ushort using var virtual void volatile while async await partial record',
+    c: 'auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while class namespace template typename public private protected virtual override new delete using try catch throw bool constexpr noexcept operator friend explicit mutable include define ifdef ifndef endif',
+    go: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var',
+    rust: 'as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait type unsafe use where while',
+    php: 'abstract and array as break callable case catch class clone const continue declare default do echo else elseif empty extends final finally fn for foreach function global if implements include include_once instanceof interface isset list namespace new or print private protected public require require_once return static switch throw trait try unset use var while yield match',
+    python: 'and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield',
+    pyBuiltins: 'print len range int str float list dict set tuple bool open input type isinstance enumerate zip map filter sorted sum min max abs super self cls any all round reversed iter next repr format hasattr getattr setattr',
+    bash: 'if then else elif fi for while until do done case esac function in return exit export local readonly select time',
+    bashBuiltins: 'echo cd ls cat grep sed awk npm npx yarn pnpm git node python python3 pip curl wget sudo mkdir rm cp mv chmod chown touch vercel docker source alias unset read test',
+    sql: 'select from where insert into values update set delete create table alter drop add column index join inner left right outer full cross on group by order having limit offset as and or not null is in like between distinct union all case when then else end primary key foreign references default unique constraint database view exists if begin commit rollback with returning asc desc',
+    sqlTypes: 'int integer bigint smallint serial varchar char text boolean bool date time timestamp timestamptz decimal numeric float double real uuid json jsonb',
+  };
+
+  const cLike = (kw, opts = {}) => [
+    ['comment', P.lineC],
+    ['comment', P.blockC],
+    ...(opts.hash ? [['comment', P.hashC]] : []),
+    ...(opts.pre ? [['kw', SRC(/#\s*[a-z]+/)]] : []),
+    ['string', P.dq],
+    ...(opts.rust
+      ? [['string', SRC(/'(?:\\[^'\n]*|[^'\\\n])'/)], ['type', SRC(/'[A-Za-z_]\w*/)]]
+      : [['string', P.sq]]),
+    ...(opts.bt ? [['string', P.bt]] : []),
+    ...(opts.dollar ? [['var', SRC(/\$[A-Za-z_]\w*/)]] : []),
+    ['number', P.num],
+    ['kw', words(kw)],
+    ['lit', words(LIT)],
+    ['type', P.typ],
+    ['fn', P.fn],
+    ['id', P.id],
+  ];
+
+  const pyPrefix = '(?:[rRbBfFuU]{1,2})?';
+  const LANGS = {
+    js: cLike(KW.js, { bt: true }),
+    ts: cLike(KW.ts, { bt: true }),
+    java: cLike(KW.java),
+    kotlin: cLike(KW.kotlin),
+    csharp: cLike(KW.csharp),
+    c: cLike(KW.c, { pre: true }),
+    go: cLike(KW.go, { bt: true }),
+    rust: cLike(KW.rust, { rust: true }),
+    php: [['kw', SRC(/<\?php|<\?=|\?>/)], ...cLike(KW.php, { hash: true, dollar: true })],
+    python: [
+      ['comment', P.hashC],
+      ['string', pyPrefix + SRC(/(?:"""[\s\S]*?(?:"""|(?![\s\S]))|'''[\s\S]*?(?:'''|(?![\s\S])))/)],
+      ['string', pyPrefix + SRC(/(?:"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)/)],
+      ['deco', SRC(/@[A-Za-z_][\w.]*/)],
+      ['number', P.num],
+      ['kw', words(KW.python)],
+      ['lit', words('True False None')],
+      ['builtin', words(KW.pyBuiltins)],
+      ['type', P.typ],
+      ['fn', P.fn],
+      ['id', P.id],
+    ],
+    bash: [
+      ['var', SRC(/\$(?:\{[^}\n]*\}|[A-Za-z_]\w*|[0-9@#?$!*-])/)],
+      ['comment', P.hashC],
+      ['string', P.dq],
+      ['string', P.sq],
+      ['string', P.bt],
+      ['flag', SRC(/\B-{1,2}[A-Za-z][\w-]*/)],
+      ['kw', words(KW.bash)],
+      ['builtin', words(KW.bashBuiltins)],
+      ['number', SRC(/\b\d+\b/)],
+      ['id', SRC(/[A-Za-z_][\w.-]*/)],
+    ],
+    sql: [
+      ['comment', SRC(/--[^\n]*/)],
+      ['comment', P.blockC],
+      ['string', P.sq],
+      ['string', P.dq],
+      ['kw', words(KW.sql)],
+      ['type', words(KW.sqlTypes)],
+      ['number', P.num],
+      ['fn', P.fn],
+      ['id', P.id],
+    ],
+    json: [
+      ['comment', P.lineC],
+      ['comment', P.blockC],
+      ['prop', SRC(/"(?:\\.|[^"\\\n])*"(?=\s*:)/)],
+      ['string', P.dq],
+      ['number', SRC(/-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/)],
+      ['lit', words('true false null')],
+    ],
+    yaml: [
+      ['comment', P.hashC],
+      ['string', P.dq],
+      ['string', P.sq],
+      ['prop', SRC(/[A-Za-z_][\w.-]*(?=\s*:(?:\s|(?![\s\S])))/)],
+      ['lit', words('true false null yes no on off')],
+      ['number', P.num],
+      ['id', SRC(/[A-Za-z_][\w.-]*/)],
+    ],
+    css: [
+      ['comment', P.blockC],
+      ['string', P.dq],
+      ['string', P.sq],
+      ['kw', SRC(/@[\w-]+|!important/)],
+      ['number', SRC(/#[\da-fA-F]{3,8}\b/)],
+      ['type', SRC(/[.#][A-Za-z_-][\w-]*/)],
+      ['prop', SRC(/-{0,2}[A-Za-z][\w-]*(?=\s*:\s)/)],
+      ['fn', SRC(/-{0,2}[A-Za-z][\w-]*(?=\()/)],
+      ['number', SRC(/-?\d*\.?\d+(?:%|[A-Za-z]+)?/)],
+      ['id', SRC(/-{0,2}[A-Za-z_][\w-]*/)],
+    ],
+  };
+
+  const LANG_ALIAS = {
+    javascript: 'js', jsx: 'js', mjs: 'js', cjs: 'js', node: 'js', nodejs: 'js',
+    typescript: 'ts', tsx: 'ts',
+    py: 'python', python3: 'python',
+    sh: 'bash', shell: 'bash', zsh: 'bash', terminal: 'bash',
+    kt: 'kotlin', cs: 'csharp', 'c#': 'csharp',
+    cpp: 'c', 'c++': 'c', cc: 'c', h: 'c', hpp: 'c',
+    golang: 'go', rs: 'rust',
+    mysql: 'sql', postgres: 'sql', postgresql: 'sql', sqlite: 'sql',
+    jsonc: 'json', json5: 'json', yml: 'yaml',
+    scss: 'css', less: 'css',
+    htm: 'html', xml: 'html', svg: 'html', xhtml: 'html',
+  };
+
+  const compiledRules = {};
+  const tokenNode = (cls, text) => {
+    const span = document.createElement('span');
+    span.className = `tok-${cls}`;
+    span.textContent = text;
+    return span;
+  };
+
+  function tokenize(code, key) {
+    let re = compiledRules[key];
+    if (!re) {
+      const rules = LANGS[key];
+      re = new RegExp(rules.map((r) => `(${r[1]})`).join('|'), key === 'sql' ? 'gi' : 'g');
+      compiledRules[key] = re;
+    }
+    const rules = LANGS[key];
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(code)) !== null) {
+      if (m[0] === '') {
+        re.lastIndex++;
+        continue;
+      }
+      let g = 1;
+      while (m[g] === undefined) g++;
+      const cls = rules[g - 1][0];
+      if (cls === 'id') continue; // plain identifier: stays part of the next plain-text gap
+      if (m.index > last) frag.appendChild(document.createTextNode(code.slice(last, m.index)));
+      frag.appendChild(tokenNode(cls, m[0]));
+      last = re.lastIndex;
+    }
+    if (last < code.length) frag.appendChild(document.createTextNode(code.slice(last)));
+    return frag;
+  }
+
+  const HTML_TAG_PIECES = /(\s+)|([^\s=<>/"']+)(?:(\s*=\s*)("[^"]*"?|'[^']*'?|[^\s>"']*))?|(\/?>)|([\s\S])/g;
+
+  function appendHtmlTag(frag, tok) {
+    const head = /^(<\/?)([A-Za-z][\w:-]*)/.exec(tok);
+    if (!head) {
+      frag.appendChild(document.createTextNode(tok));
+      return;
+    }
+    frag.appendChild(tokenNode('tag', head[1] + head[2]));
+    const rest = tok.slice(head[0].length);
+    const re = new RegExp(HTML_TAG_PIECES.source, 'g');
+    let m;
+    while ((m = re.exec(rest)) !== null) {
+      if (m[1] !== undefined) frag.appendChild(document.createTextNode(m[1]));
+      else if (m[2] !== undefined) {
+        frag.appendChild(tokenNode('attr', m[2]));
+        if (m[3] !== undefined) frag.appendChild(document.createTextNode(m[3]));
+        if (m[4]) frag.appendChild(tokenNode('string', m[4]));
+      } else if (m[5] !== undefined) frag.appendChild(tokenNode('tag', m[5]));
+      else frag.appendChild(document.createTextNode(m[6]));
+    }
+  }
+
+  function htmlFragment(code) {
+    const frag = document.createDocumentFragment();
+    const re = /<!--[\s\S]*?(?:-->|(?![\s\S]))|<![A-Za-z][^>]*>?|<\/?[A-Za-z][^<>]*>?/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(code)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(code.slice(last, m.index)));
+      const tok = m[0];
+      last = re.lastIndex;
+      if (tok.startsWith('<!--')) {
+        frag.appendChild(tokenNode('comment', tok));
+      } else if (tok.startsWith('<!')) {
+        frag.appendChild(tokenNode('meta', tok));
+      } else {
+        appendHtmlTag(frag, tok);
+        const name = /^<([A-Za-z][\w:-]*)/.exec(tok);
+        const lower = name ? name[1].toLowerCase() : '';
+        if ((lower === 'script' || lower === 'style') && tok.endsWith('>') && !tok.endsWith('/>')) {
+          const from = re.lastIndex;
+          const close = code.slice(from).search(new RegExp(`</${lower}\\b`, 'i'));
+          const end = close === -1 ? code.length : from + close;
+          const inner = code.slice(from, end);
+          if (inner) frag.appendChild(tokenize(inner, lower === 'script' ? 'js' : 'css'));
+          re.lastIndex = end;
+          last = end;
+        }
+      }
+    }
+    if (last < code.length) frag.appendChild(document.createTextNode(code.slice(last)));
+    return frag;
+  }
+
+  /** Returns a highlighted DocumentFragment, or null to render the code as plain text. */
+  function highlightCode(code, lang) {
+    const key = LANG_ALIAS[lang] || lang;
+    if (!key || code.length > 60000) return null;
+    try {
+      if (key === 'html') return htmlFragment(code);
+      return LANGS[key] ? tokenize(code, key) : null;
+    } catch {
+      return null;
+    }
+  }
+
   function createCodeBlock(code, lang) {
     const wrap = el('div', 'code-block');
     const header = el('div', 'code-header');
@@ -370,7 +626,9 @@
     pre.tabIndex = 0; // lets keyboard users scroll long lines
     pre.setAttribute('aria-label', `${lang || 'Code'} snippet`);
     const codeEl = document.createElement('code');
-    codeEl.textContent = code;
+    const highlighted = highlightCode(code, (lang || '').toLowerCase());
+    if (highlighted) codeEl.appendChild(highlighted);
+    else codeEl.textContent = code;
     pre.appendChild(codeEl);
 
     wrap.append(header, pre);
