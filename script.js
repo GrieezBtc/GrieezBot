@@ -972,9 +972,191 @@
     return row;
   }
 
-  const appendMessage = (msg) => {
-    els.messages.appendChild(msg.role === 'user' ? createUserMessage(msg) : createAiMessage(msg));
-  };
+  /* ============================================================
+     Typewriter effect
+     The full reply is rendered once (so layout rules stay exact),
+     then revealed in order. Blocks that haven't been reached are
+     display:none, tables/rules appear whole, and the action bar
+     keeps its space reserved — so nothing jumps while typing.
+     ============================================================ */
+  const TYPE = { MIN_CPS: 90, TARGET_SECONDS: 6, ATOMIC_WEIGHT: 24, GROW_MS: 240 };
+  const TYPE_HIDE_SELECTOR = 'p, h3, h4, h5, h6, ul, ol, li, blockquote, hr, br, tr, .code-block, .table-wrap, .inline-code';
+  const TYPE_ATOMIC_SELECTOR = 'hr, br';
+  let typer = null;
+
+  /** complete = true finishes instantly; false just abandons it (the row is being discarded). */
+  function stopTyper(complete) {
+    if (!typer) return;
+    const current = typer;
+    typer = null;
+    if (complete) current.finish(true);
+    else current.cancel();
+  }
+
+  function startTypewriter(row) {
+    stopTyper(true);
+    if (prefersReducedMotion.matches) return;
+    const content = row.querySelector('.ai-content');
+    if (!content) return;
+
+    // 1. Plan the reveal order: text nodes (typed) and atomic blocks (shown whole).
+    const steps = [];
+    let weight = 0;
+    const walk = (parent) => {
+      Array.from(parent.childNodes).forEach((child) => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          if (!child.data) return;
+          steps.push({
+            kind: 'text',
+            node: child,
+            full: child.data,
+            len: child.data.length,
+            start: weight,
+            shown: 0,
+            inCode: Boolean(child.parentElement && child.parentElement.closest('pre')),
+          });
+          weight += child.data.length;
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+          if (child.matches(TYPE_ATOMIC_SELECTOR)) {
+            steps.push({ kind: 'atomic', el: child, start: weight });
+            weight += child.matches('br') ? 0 : TYPE.ATOMIC_WEIGHT;
+          } else if (!child.matches('.code-header')) {
+            walk(child);
+          }
+        }
+      });
+    };
+    walk(content);
+    if (!steps.length) return;
+
+    // 2a. Lock table column widths (measured while the table is fully visible).
+    const lockedCells = [];
+    const lockedTables = [];
+    content.querySelectorAll('.table-wrap table').forEach((table) => {
+      const first = table.rows[0];
+      if (!first) return;
+      const cells = Array.from(first.cells);
+      const widths = cells.map((c) => c.getBoundingClientRect().width);
+      table.style.tableLayout = 'fixed';
+      table.style.width = `${widths.reduce((a, b) => a + b, 0)}px`;
+      cells.forEach((c, i) => {
+        c.style.width = `${widths[i]}px`;
+        lockedCells.push(c);
+      });
+      lockedTables.push(table);
+    });
+
+    // 2b. Hide everything that has not been reached yet.
+    content.querySelectorAll(TYPE_HIDE_SELECTOR).forEach((node) => node.classList.add('tw-hide'));
+    steps.forEach((s) => { if (s.kind === 'text') s.node.data = ''; });
+    content.querySelectorAll('.copy-btn').forEach((b) => { b.disabled = true; });
+    row.classList.add('is-typing', 'no-rise');
+    els.messages.setAttribute('aria-busy', 'true');
+
+    const rate = Math.max(TYPE.MIN_CPS, weight / TYPE.TARGET_SECONDS); // characters per second
+    const caret = el('span', 'tw-caret');
+    caret.setAttribute('aria-hidden', 'true');
+    let cur = 0;
+    let raf = 0;
+    let startTime = 0;
+    let caretNode = null;
+
+    let curNow = 0;
+    let holdUntil = 0;
+    const reveal = (node) => {
+      for (let n = node; n && n !== content; n = n.parentElement) {
+        if (!n.classList.contains('tw-hide')) continue;
+        n.classList.remove('tw-hide');
+        if (n.matches('.code-block, .table-wrap')) {
+          // Grow the block in smoothly instead of popping in, and pause typing while it does.
+          n.classList.add('tw-enter');
+          n.addEventListener('animationend', () => n.classList.remove('tw-enter'), { once: true });
+          holdUntil = curNow + TYPE.GROW_MS;
+        }
+      }
+    };
+
+    const advance = (target) => {
+      while (cur < steps.length) {
+        const s = steps[cur];
+        if (s.kind === 'atomic') {
+          if (target < s.start) return;
+          reveal(s.el);
+          cur++;
+          continue;
+        }
+        const typed = Math.floor(target - s.start);
+        if (typed <= 0) return;
+        let k = Math.min(s.len, typed);
+        // Reveal whole words so a half-typed word never wraps to the next line and jumps back.
+        if (!s.inCode) while (k < s.len && !/\s/.test(s.full[k])) k++;
+        if (k !== s.shown) {
+          if (s.shown === 0) reveal(s.node.parentElement);
+          s.node.data = s.full.slice(0, k);
+          s.shown = k;
+        }
+        if (caretNode !== s.node && s.node.parentNode) {
+          s.node.parentNode.insertBefore(caret, s.node.nextSibling);
+          caretNode = s.node;
+        }
+        if (k < s.len) return;
+        cur++;
+      }
+    };
+
+    const cleanup = () => {
+      cancelAnimationFrame(raf);
+      content.removeEventListener('click', skip);
+      els.messages.removeAttribute('aria-busy');
+    };
+
+    const finish = (doScroll) => {
+      const stick = doScroll && isNearBottom();
+      cleanup();
+      steps.forEach((s) => { if (s.kind === 'text') s.node.data = s.full; });
+      content.querySelectorAll('.tw-hide').forEach((n) => n.classList.remove('tw-hide'));
+      content.querySelectorAll('.copy-btn').forEach((b) => { b.disabled = false; });
+      content.querySelectorAll('.tw-enter').forEach((n) => n.classList.remove('tw-enter'));
+      lockedTables.forEach((t) => { t.style.tableLayout = ''; t.style.width = ''; });
+      lockedCells.forEach((c) => { c.style.width = ''; });
+      caret.remove();
+      row.classList.remove('is-typing');
+      if (typer === handle) typer = null;
+      if (stick) els.scroller.scrollTop = els.scroller.scrollHeight;
+      updateJumpButton();
+    };
+
+    let lastNow = 0;
+    const frame = (now) => {
+      if (!startTime) {
+        startTime = now;
+        lastNow = now;
+      }
+      const dt = now - lastNow;
+      lastNow = now;
+      curNow = now;
+      const stick = isNearBottom(); // measured before this frame's growth
+      if (now < holdUntil) startTime += dt; // timeline pauses while a block grows in
+      else advance(((now - startTime) / 1000) * rate);
+      if (stick) els.scroller.scrollTop = els.scroller.scrollHeight; // instant, no smooth-scroll fighting
+      else updateJumpButton();
+      if (cur >= steps.length) finish(false);
+      else raf = requestAnimationFrame(frame);
+    };
+
+    const skip = () => finish(true); // tap the reply to show it all at once
+    const handle = { finish, cancel: cleanup };
+    typer = handle;
+    content.addEventListener('click', skip);
+    raf = requestAnimationFrame(frame);
+  }
+
+  function appendMessage(msg, animate = false) {
+    const row = msg.role === 'user' ? createUserMessage(msg) : createAiMessage(msg);
+    els.messages.appendChild(row);
+    if (animate && msg.role === 'assistant') startTypewriter(row);
+    return row;
+  }
 
   function removeTail() {
     els.messages.querySelectorAll('.tail').forEach((n) => n.remove());
@@ -1005,6 +1187,7 @@
   }
 
   function renderChat() {
+    stopTyper(false);
     els.messages.textContent = '';
     const conv = getActive();
     const has = Boolean(conv && conv.messages.length);
@@ -1143,6 +1326,7 @@
      Sending + API
      ============================================================ */
   function sendMessage(text) {
+    stopTyper(true);
     let conv = getActive();
     const isFirst = !conv || conv.messages.length === 0;
     if (!conv) {
@@ -1248,7 +1432,7 @@
     if (convId === state.activeId) {
       const stick = isNearBottom();
       removeTail();
-      if (msg) appendMessage(msg);
+      if (msg) appendMessage(msg, true);
       syncTail();
       if (stick) scrollToBottom(true);
       updateJumpButton();
@@ -1373,7 +1557,10 @@
     els.sidebarClose.addEventListener('click', () => closeSidebar(true));
     els.overlay.addEventListener('click', () => closeSidebar(true));
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closeSidebar(true);
+      if (e.key === 'Escape') {
+        stopTyper(true);
+        closeSidebar(true);
+      }
     });
     window.addEventListener('resize', () => {
       if (!isMobileLayout()) closeSidebar();
