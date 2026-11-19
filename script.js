@@ -282,7 +282,8 @@
 
   function appendText(parent, text) {
     if (!text) return;
-    const parts = text.split('\n');
+    // Newlines and literal <br> tags (common inside table cells) become real line breaks.
+    const parts = text.split(/\n|<br\s*\/?>/i);
     parts.forEach((part, index) => {
       if (index > 0) parent.appendChild(document.createElement('br'));
       if (part) parent.appendChild(document.createTextNode(part));
